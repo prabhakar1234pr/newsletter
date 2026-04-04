@@ -1387,8 +1387,7 @@ def research(topic: str, num_results: int = 5,
         })
 
     if not sources:
-        print(f"ERROR: No sources collected for topic: {topic}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"No sources collected for topic: {topic}")
 
     print(f"\n✓ Collected {len(sources)} sources for: {research_query}", file=sys.stderr)
 

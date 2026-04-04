@@ -59,6 +59,8 @@ jobs:
           FIREBASE_PROJECT_ID: "${{ secrets.FIREBASE_PROJECT_ID }}"
           INTERNAL_SECRET: "${{ secrets.INTERNAL_SECRET }}"
           ALLOWED_ORIGINS: "${{ secrets.ALLOWED_ORIGINS }}"
+          GMAIL_USER: "${{ secrets.GMAIL_USER }}"
+          GMAIL_APP_PASSWORD: "${{ secrets.GMAIL_APP_PASSWORD }}"
           ENVEOF
 
       - name: Deploy to Cloud Run
@@ -72,6 +74,7 @@ jobs:
             --cpu 1 \
             --timeout 300 \
             --concurrency 10 \
+            --no-cpu-throttling \
             --min-instances 0 \
             --max-instances 5 \
             --env-vars-file /tmp/env-vars.yaml

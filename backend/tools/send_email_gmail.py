@@ -48,8 +48,7 @@ def send_email(
     app_password = os.getenv("GMAIL_APP_PASSWORD")
 
     if not gmail_user or not app_password:
-        print("ERROR: GMAIL_USER and GMAIL_APP_PASSWORD must be set in .env", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError("GMAIL_USER and GMAIL_APP_PASSWORD must be set in environment")
 
     html_content = html_path.read_text(encoding="utf-8")
     text_content = text_path.read_text(encoding="utf-8")
@@ -73,11 +72,9 @@ def send_email(
             server.login(gmail_user, app_password)
             server.sendmail(gmail_user, recipients, msg.as_string())
     except smtplib.SMTPAuthenticationError:
-        print("ERROR: Gmail authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD.", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError("Gmail authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD.")
     except Exception as e:
-        print(f"ERROR: SMTP send failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise RuntimeError(f"SMTP send failed: {e}") from e
 
     print(f"✓ Email sent to {recipients}", file=sys.stderr)
     return ",".join(recipients)
