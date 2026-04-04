@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required for Workload Identity Federation
+      id-token: write
 
     steps:
       - name: Checkout
@@ -48,6 +48,19 @@ jobs:
           docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/newsletter/${{ env.SERVICE }}:${{ github.sha }}
           docker push ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/newsletter/${{ env.SERVICE }}:latest
 
+      - name: Write env vars file
+        run: |
+          cat > /tmp/env-vars.yaml << 'ENVEOF'
+          GOOGLE_API_KEY: "${{ secrets.GOOGLE_API_KEY }}"
+          GCP_PROJECT_ID: "${{ secrets.GCP_PROJECT_ID }}"
+          GCS_BUCKET_NAME: "${{ secrets.GCS_BUCKET_NAME }}"
+          RESEND_API_KEY: "${{ secrets.RESEND_API_KEY }}"
+          RESEND_FROM_EMAIL: "${{ secrets.RESEND_FROM_EMAIL }}"
+          FIREBASE_PROJECT_ID: "${{ secrets.FIREBASE_PROJECT_ID }}"
+          INTERNAL_SECRET: "${{ secrets.INTERNAL_SECRET }}"
+          ALLOWED_ORIGINS: "${{ secrets.ALLOWED_ORIGINS }}"
+          ENVEOF
+
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
@@ -61,15 +74,7 @@ jobs:
             --concurrency 10 \
             --min-instances 0 \
             --max-instances 5 \
-            --set-env-vars "\
-          GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }},\
-          GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},\
-          GCS_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }},\
-          RESEND_API_KEY=${{ secrets.RESEND_API_KEY }},\
-          RESEND_FROM_EMAIL=${{ secrets.RESEND_FROM_EMAIL }},\
-          FIREBASE_PROJECT_ID=${{ secrets.FIREBASE_PROJECT_ID }},\
-          INTERNAL_SECRET=${{ secrets.INTERNAL_SECRET }},\
-          ALLOWED_ORIGINS=${{ secrets.ALLOWED_ORIGINS }}"
+            --env-vars-file /tmp/env-vars.yaml
 
       - name: Print service URL
         run: |
