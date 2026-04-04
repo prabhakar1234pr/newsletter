@@ -33,7 +33,7 @@ from tools import (
     generate_infographic,
     render_html,
     research_topic,
-    send_email_resend,
+    send_email_gmail,
     synthesize_content,
     upload_to_gcs,
 )
@@ -181,7 +181,7 @@ def run_pipeline(
         # ── Step 6: Send email ────────────────────────────────────────
         print("Step 6/6: Sending email...", file=sys.stderr)
         subject = f"AI Newsletter — {content.get('headline', topic)} [{datetime.now().strftime('%b %d')}]"
-        message_id = send_email_resend.send_email(
+        message_id = send_email_gmail.send_email(
             html_path=html_output,
             text_path=text_output,
             recipients=[recipient_email],
