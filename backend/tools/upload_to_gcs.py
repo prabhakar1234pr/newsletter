@@ -52,6 +52,7 @@ def upload_files(file_paths: list[str], bucket_name: str,
         content_type = (
             "image/png" if path.suffix == ".png"
             else "text/html; charset=utf-8" if path.suffix == ".html"
+            else "text/plain; charset=utf-8" if path.suffix == ".txt"
             else "application/octet-stream"
         )
 
@@ -71,6 +72,24 @@ def upload_files(file_paths: list[str], bucket_name: str,
         print(f"  → {public_url}", file=sys.stderr)
 
     return uploads
+
+
+def download_public_gcs_url(gcs_url: str, dest: Path) -> None:
+    """Download a publicly readable object URL to a local path."""
+    prefix = "https://storage.googleapis.com/"
+    if not gcs_url.startswith(prefix):
+        raise ValueError(f"Unexpected GCS URL (expected {prefix}...): {gcs_url[:60]}...")
+    rest = gcs_url[len(prefix) :]
+    bucket_name, _, blob_path = rest.partition("/")
+    if not bucket_name or not blob_path:
+        raise ValueError(f"Could not parse bucket/path from URL: {gcs_url[:80]}...")
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(blob_path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    blob.download_to_filename(str(dest))
+    print(f"Downloaded gs://{bucket_name}/{blob_path} → {dest}", file=sys.stderr)
 
 
 def main():

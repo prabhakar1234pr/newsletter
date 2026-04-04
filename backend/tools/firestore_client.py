@@ -11,7 +11,7 @@ Usage (standalone seed):
 
 import argparse
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -22,6 +22,9 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 load_dotenv()
 
 PROJECT_ID = os.getenv("GCP_PROJECT_ID", "ai-newsletter-2026")
+
+# Pipeline starts this many minutes before the user's chosen delivery time (UTC clock).
+PREPARE_LEAD_MINUTES = int(os.getenv("NEWSLETTER_PREPARE_LEAD_MINUTES", "2"))
 
 # ---------------------------------------------------------------------------
 # Client (module-level singleton)
@@ -131,26 +134,46 @@ def seed_initial_prompt() -> str:
 # Subscriptions
 # ---------------------------------------------------------------------------
 
-def _local_hour_to_utc(local_hour: int, tz_str: str) -> int:
-    """Convert a subscription's local delivery hour to UTC hour.
+def _local_time_to_utc_hm(local_hour: int, local_minute: int, tz_str: str) -> tuple[int, int]:
+    """Convert local delivery clock time to UTC (hour, minute) for today's date.
 
-    Handles DST correctly by using today's actual date for the conversion.
-    Falls back to treating local_hour as UTC if the timezone string is invalid.
+    Handles DST via ZoneInfo. Falls back to treating local time as UTC.
     """
+    utc_dt = local_delivery_to_utc_datetime(local_hour, local_minute, tz_str)
+    return utc_dt.hour, utc_dt.minute
+
+
+def local_delivery_to_utc_datetime(local_hour: int, local_minute: int, tz_str: str) -> datetime:
+    """Today's calendar date in the subscription TZ + local delivery clock → instant in UTC."""
     now_utc = datetime.now(timezone.utc)
     try:
         tz = ZoneInfo(tz_str)
-        local_dt = datetime(now_utc.year, now_utc.month, now_utc.day,
-                            local_hour, 0, 0, tzinfo=tz)
-        return local_dt.astimezone(timezone.utc).hour
+        local_today = now_utc.astimezone(tz)
+        local_dt = datetime(
+            local_today.year,
+            local_today.month,
+            local_today.day,
+            local_hour,
+            local_minute,
+            0,
+            tzinfo=tz,
+        )
+        return local_dt.astimezone(timezone.utc)
     except (ZoneInfoNotFoundError, Exception):
-        return local_hour  # fallback: treat as UTC
+        return datetime(
+            now_utc.year, now_utc.month, now_utc.day,
+            local_hour, local_minute, tzinfo=timezone.utc,
+        )
 
 
-def get_subscriptions_due(delivery_hour_utc: int) -> list[dict]:
-    """Return all active subscriptions whose local delivery hour maps to the
-    given UTC hour today (handles timezones + DST correctly).
-    """
+def _utc_hm_minus_minutes(utc_hour_v: int, utc_minute_v: int, delta_minutes: int) -> tuple[int, int]:
+    base = datetime(2000, 1, 1, utc_hour_v, utc_minute_v, 0, tzinfo=timezone.utc)
+    t = base - timedelta(minutes=delta_minutes)
+    return t.hour, t.minute
+
+
+def get_subscriptions_due_send(utc_hour: int, utc_minute: int) -> list[dict]:
+    """Subscriptions whose scheduled local delivery maps to this UTC minute (email send)."""
     db = _get_db()
     docs = (
         db.collection("subscriptions")
@@ -161,13 +184,38 @@ def get_subscriptions_due(delivery_hour_utc: int) -> list[dict]:
     for doc in docs:
         data = doc.to_dict()
         data["id"] = doc.id
-        utc_hour = _local_hour_to_utc(
-            data.get("delivery_hour", 0),
-            data.get("timezone", "UTC"),
-        )
-        if utc_hour == delivery_hour_utc:
+        lh = int(data.get("delivery_hour", 0))
+        lm = int(data.get("delivery_minute", 0))
+        uh, um = _local_time_to_utc_hm(lh, lm, data.get("timezone", "UTC"))
+        if uh == utc_hour and um == utc_minute:
             results.append(data)
     return results
+
+
+def get_subscriptions_due_prepare(utc_hour: int, utc_minute: int) -> list[dict]:
+    """Subscriptions whose pipeline should start now (send time minus PREPARE_LEAD_MINUTES)."""
+    db = _get_db()
+    docs = (
+        db.collection("subscriptions")
+        .where(filter=FieldFilter("is_active", "==", True))
+        .stream()
+    )
+    results = []
+    for doc in docs:
+        data = doc.to_dict()
+        data["id"] = doc.id
+        lh = int(data.get("delivery_hour", 0))
+        lm = int(data.get("delivery_minute", 0))
+        send_uh, send_um = _local_time_to_utc_hm(lh, lm, data.get("timezone", "UTC"))
+        prep_uh, prep_um = _utc_hm_minus_minutes(send_uh, send_um, PREPARE_LEAD_MINUTES)
+        if prep_uh == utc_hour and prep_um == utc_minute:
+            results.append(data)
+    return results
+
+
+# Backward-compatible name
+def get_subscriptions_due(utc_hour: int, utc_minute: int) -> list[dict]:
+    return get_subscriptions_due_send(utc_hour, utc_minute)
 
 
 def get_subscription(subscription_id: str) -> dict | None:
@@ -183,6 +231,7 @@ def get_subscription(subscription_id: str) -> dict | None:
 
 def create_subscription(user_id: str, topic: str, sub_genre: str | None,
                         delivery_hour: int, timezone_str: str,
+                        delivery_minute: int = 0,
                         frequency: str = "daily") -> str:
     """Create a new subscription. Returns the new doc ID."""
     db = _get_db()
@@ -191,6 +240,7 @@ def create_subscription(user_id: str, topic: str, sub_genre: str | None,
         "topic": topic,
         "sub_genre": sub_genre,
         "delivery_hour": delivery_hour,
+        "delivery_minute": delivery_minute,
         "timezone": timezone_str,
         "frequency": frequency,
         "is_active": True,
@@ -237,25 +287,114 @@ def get_user(uid: str) -> dict | None:
 # Editions
 # ---------------------------------------------------------------------------
 
+def _edition_date_for_display(scheduled_send_utc: datetime, tz_str: str) -> str:
+    try:
+        return scheduled_send_utc.astimezone(ZoneInfo(tz_str)).date().isoformat()
+    except (ZoneInfoNotFoundError, Exception):
+        return scheduled_send_utc.strftime("%Y-%m-%d")
+
+
+def same_utc_minute(a, b) -> bool:
+    def to_minute_utc(x):
+        if x is None:
+            return None
+        if hasattr(x, "replace"):
+            if x.tzinfo is None:
+                x = x.replace(tzinfo=timezone.utc)
+            x = x.astimezone(timezone.utc)
+            return (x.year, x.month, x.day, x.hour, x.minute)
+        return None
+
+    return to_minute_utc(a) == to_minute_utc(b)
+
+
 def create_edition(subscription_id: str, user_id: str, subject: str,
                    html_gcs_url: str, plain_text_preview: str,
                    research_query: str) -> str:
-    """Record a sent newsletter edition. Returns the new doc ID."""
+    """Record a sent newsletter edition (immediate send path). Returns the new doc ID."""
     db = _get_db()
+    now = datetime.now(timezone.utc)
     _, doc_ref = db.collection("editions").add({
         "subscription_id": subscription_id,
         "user_id": user_id,
-        "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "date": now.strftime("%Y-%m-%d"),
         "subject": subject,
         "html_gcs_url": html_gcs_url,
+        "text_gcs_url": None,
         "plain_text_preview": plain_text_preview[:500],
         "research_query": research_query,
-        "sent_at": datetime.now(timezone.utc),
+        "sent_at": now,
         "quality_score": None,
         "agent_notes": None,
         "status": "sent",
+        "scheduled_send_at": None,
     })
     return doc_ref.id
+
+
+def create_edition_pending(
+    subscription_id: str,
+    user_id: str,
+    subject: str,
+    html_gcs_url: str,
+    text_gcs_url: str,
+    plain_text_preview: str,
+    research_query: str,
+    scheduled_send_utc: datetime,
+    tz_str: str,
+) -> str:
+    """Edition ready for email at scheduled_send_utc (status pending_email)."""
+    db = _get_db()
+    prepared_at = datetime.now(timezone.utc)
+    _, doc_ref = db.collection("editions").add({
+        "subscription_id": subscription_id,
+        "user_id": user_id,
+        "date": _edition_date_for_display(scheduled_send_utc, tz_str),
+        "subject": subject,
+        "html_gcs_url": html_gcs_url,
+        "text_gcs_url": text_gcs_url,
+        "plain_text_preview": plain_text_preview[:500],
+        "research_query": research_query,
+        "prepared_at": prepared_at,
+        "scheduled_send_at": scheduled_send_utc,
+        "sent_at": None,
+        "quality_score": None,
+        "agent_notes": None,
+        "status": "pending_email",
+    })
+    return doc_ref.id
+
+
+def get_pending_edition_for_send(subscription_id: str, utc_now: datetime) -> dict | None:
+    """Return a pending edition for this subscription scheduled for this UTC minute."""
+    db = _get_db()
+    docs = (
+        db.collection("editions")
+        .where(filter=FieldFilter("subscription_id", "==", subscription_id))
+        .where(filter=FieldFilter("status", "==", "pending_email"))
+        .stream()
+    )
+    for doc in docs:
+        data = doc.to_dict()
+        data["id"] = doc.id
+        sas = data.get("scheduled_send_at")
+        if sas and same_utc_minute(sas, utc_now):
+            return data
+    return None
+
+
+def finalize_edition_sent(edition_id: str) -> None:
+    db = _get_db()
+    db.collection("editions").document(edition_id).update({
+        "sent_at": datetime.now(timezone.utc),
+        "status": "sent",
+    })
+
+
+def has_pending_for_scheduled_send(subscription_id: str, scheduled_send_utc: datetime) -> bool:
+    """True if a pending_email edition already exists for this subscription and send minute."""
+    pending = get_pending_edition_for_send(subscription_id, scheduled_send_utc)
+    return pending is not None
 
 
 def get_editions_for_date(date_str: str) -> list[dict]:
@@ -276,21 +415,34 @@ def get_editions_for_date(date_str: str) -> list[dict]:
 
 
 def get_editions_for_subscription(subscription_id: str, limit: int = 30) -> list[dict]:
-    """Return recent editions for a subscription (for the archive page)."""
+    """Return recent sent editions for a subscription (archive / history)."""
     db = _get_db()
     docs = (
         db.collection("editions")
         .where(filter=FieldFilter("subscription_id", "==", subscription_id))
-        .order_by("sent_at", direction=firestore.Query.DESCENDING)
-        .limit(limit)
         .stream()
     )
     results = []
     for doc in docs:
         data = doc.to_dict()
+        if data.get("status") != "sent":
+            continue
         data["id"] = doc.id
         results.append(data)
-    return results
+
+    def _sort_key(row: dict):
+        s = row.get("sent_at")
+        if s is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        d = s
+        if hasattr(d, "timestamp") and getattr(d, "tzinfo", None) is None:
+            d = d.replace(tzinfo=timezone.utc)
+        elif hasattr(d, "timestamp"):
+            d = s.astimezone(timezone.utc)
+        return d
+
+    results.sort(key=_sort_key, reverse=True)
+    return results[:limit]
 
 
 def update_edition_quality(edition_id: str, score: int, notes: str) -> None:
@@ -335,16 +487,17 @@ def main():
         print(prompt[:300] + "...")
 
     elif args.seed_test_subscription:
-        current_hour = datetime.now(timezone.utc).hour
+        now = datetime.now(timezone.utc)
         sub_id = create_subscription(
             user_id="test_user_001",
             topic="Telugu cinema",
             sub_genre=None,
-            delivery_hour=current_hour,
-            timezone_str="Asia/Kolkata",
+            delivery_hour=now.hour,
+            timezone_str="UTC",
+            delivery_minute=now.minute,
         )
         print(f"Test subscription created: {sub_id}")
-        print(f"Delivery hour (UTC): {current_hour}")
+        print(f"Delivery time (UTC): {now.hour}:{now.minute:02d}")
 
     else:
         parser.print_help()

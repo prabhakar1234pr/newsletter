@@ -24,6 +24,19 @@ const HOURS = Array.from({ length: 24 }, (_, i) => ({
   value: String(i),
 }));
 
+const MINUTES = Array.from({ length: 60 }, (_, i) => ({
+  label: String(i).padStart(2, "0"),
+  value: String(i),
+}));
+
+function formatDeliveryClock(hourStr, minuteStr) {
+  const h = parseInt(hourStr, 10);
+  const m = parseInt(minuteStr, 10);
+  const h12 = h % 12 || 12;
+  const period = h < 12 ? "AM" : "PM";
+  return `${h12}:${String(m).padStart(2, "0")} ${period}`;
+}
+
 const TOPIC_ICONS = {
   "AI & Technology":         "⚡",
   "Geopolitics":             "🌍",
@@ -158,6 +171,7 @@ export default function Onboarding() {
   const [topic, setTopic]       = useState("");
   const [subTopic, setSubTopic] = useState("");
   const [hour, setHour]         = useState("8");
+  const [minute, setMinute]     = useState("0");
   const [timezone, setTimezone] = useState("Asia/Kolkata");
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState("");
@@ -165,7 +179,7 @@ export default function Onboarding() {
 
   const subTopics = topic ? TOPICS_CONFIG[topic] || [] : [];
   const canStep1  = !!topic;
-  const canSubmit = topic && hour && timezone;
+  const canSubmit = topic && hour !== "" && minute !== "" && timezone;
 
   const goTo = (next) => {
     setDirection(next > step ? 1 : -1);
@@ -181,6 +195,7 @@ export default function Onboarding() {
         topic,
         sub_genre: (subTopic && subTopic !== "_all_") ? subTopic : null,
         delivery_hour: parseInt(hour, 10),
+        delivery_minute: parseInt(minute, 10),
         timezone,
         frequency: "daily",
       });
@@ -193,7 +208,7 @@ export default function Onboarding() {
     }
   };
 
-  const hourLabel = HOURS[parseInt(hour)]?.label.split(" — ")[1] || `${hour}:00`;
+  const hourLabel = formatDeliveryClock(hour, minute);
   const tzLabel   = TIMEZONES.find((t) => t.value === timezone)?.label?.split(" — ")[0] || timezone;
   const firstName = user?.displayName?.split(" ")[0] || "there";
 
@@ -293,7 +308,7 @@ export default function Onboarding() {
                 When should it arrive?
               </h1>
               <p style={{ fontSize: "14px", color: "#94A3B8", marginBottom: "28px" }}>
-                Your brief will land in your inbox at this exact time, every morning.
+                Your brief will land in your inbox at this exact time every day (in the timezone below).
               </p>
 
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -302,11 +317,18 @@ export default function Onboarding() {
                     <Clock style={{ height: "13px", width: "13px", color: "#6366F1" }} />
                     Delivery time
                   </label>
-                  <NativeSelect value={hour} onChange={setHour}>
-                    {HOURS.map(({ label, value }) => (
-                      <option key={value} value={value}>{label}</option>
-                    ))}
-                  </NativeSelect>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                    <NativeSelect value={hour} onChange={setHour} aria-label="Hour">
+                      {HOURS.map(({ label, value }) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </NativeSelect>
+                    <NativeSelect value={minute} onChange={setMinute} aria-label="Minute">
+                      {MINUTES.map(({ label, value }) => (
+                        <option key={value} value={value}>:{label}</option>
+                      ))}
+                    </NativeSelect>
+                  </div>
                 </div>
 
                 <div>
@@ -380,7 +402,7 @@ export default function Onboarding() {
                   <div style={{ height: "1px", background: "rgba(99,102,241,0.1)" }} />
 
                   {[
-                    { icon: Clock,    text: <>Every morning at <strong style={{ color: "#0F172A" }}>{hourLabel}</strong></> },
+                    { icon: Clock,    text: <>Every day at <strong style={{ color: "#0F172A" }}>{hourLabel}</strong></> },
                     { icon: Globe,    text: <>Timezone: <strong style={{ color: "#0F172A" }}>{tzLabel}</strong></> },
                     { icon: Sparkles, text: <>Synthesized from <strong style={{ color: "#0F172A" }}>many sources</strong> by Gemini 2.5 Pro</> },
                   ].map(({ icon: Icon, text }, i) => (

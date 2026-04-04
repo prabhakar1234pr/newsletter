@@ -274,7 +274,7 @@ function SubscriptionCard({ sub, toggling, onToggle, deleting, onDelete }) {
         <div style={{ display: "flex", alignItems: "center", gap: "16px", marginBottom: "16px" }}>
           <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "#94A3B8" }}>
             <Clock style={{ height: "13px", width: "13px" }} />
-            {sub.delivery_hour}:00 daily
+            {String(sub.delivery_hour ?? 0).padStart(2, "0")}:{String(sub.delivery_minute ?? 0).padStart(2, "0")} daily
           </span>
           <span style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "#94A3B8" }}>
             <Globe style={{ height: "13px", width: "13px" }} />

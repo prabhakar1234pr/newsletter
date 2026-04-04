@@ -39,9 +39,14 @@ from tools import (
 )
 from tools.firestore_client import (
     create_edition,
+    create_edition_pending,
+    finalize_edition_sent,
     get_active_prompt,
+    get_pending_edition_for_send,
     get_subscription,
     get_user,
+    has_pending_for_scheduled_send,
+    local_delivery_to_utc_datetime,
     mark_edition_failed,
 )
 
@@ -63,11 +68,19 @@ def run_pipeline(
     subscription_id: str,
     tone: str = "professional but approachable",
     audience: str = "general professionals",
-) -> str:
-    """Execute the full 6-step newsletter pipeline.
+    *,
+    defer_email: bool = False,
+    delivery_timezone: str | None = None,
+    delivery_hour: int | None = None,
+    delivery_minute: int | None = None,
+) -> str | None:
+    """Execute the newsletter pipeline (steps 1–6, or 1–5 + pending edition if defer_email).
+
+    When defer_email is True, HTML/text are uploaded to GCS and a pending edition is
+    created; Gmail is sent later at the scheduled minute by send_scheduled_edition.
 
     Returns:
-        The Firestore edition doc ID on success.
+        The Firestore edition doc ID on success, or None if prepare was skipped (duplicate).
 
     Raises:
         SystemExit on unrecoverable failure.
@@ -94,6 +107,19 @@ def run_pipeline(
     text_output = tmp_dir / "newsletter.txt"
 
     edition_id = None
+
+    if defer_email:
+        if not delivery_timezone or delivery_hour is None or delivery_minute is None:
+            raise ValueError("defer_email requires delivery_timezone, delivery_hour, delivery_minute")
+        scheduled_send_utc = local_delivery_to_utc_datetime(
+            delivery_hour, delivery_minute, delivery_timezone
+        )
+        if has_pending_for_scheduled_send(subscription_id, scheduled_send_utc):
+            print(
+                "Prepare skipped: pending edition already exists for this send slot",
+                file=sys.stderr,
+            )
+            return None
 
     try:
         # ── Step 1: Research ──────────────────────────────────────────
@@ -172,15 +198,42 @@ def run_pipeline(
         text_output.write_text(plain_text, encoding="utf-8")
         print("  ✓ HTML rendered", file=sys.stderr)
 
-        # Upload newsletter HTML to GCS so the History page can iframe it
-        html_uploads = upload_to_gcs.upload_files([str(html_output)], GCS_BUCKET, user_id=user_id)
-        if html_uploads:
-            html_gcs_url = html_uploads[0]["gcs_url"]
+        # Upload HTML (and plain text if deferring send) to GCS
+        upload_paths = [str(html_output), str(text_output)] if defer_email else [str(html_output)]
+        uploads = upload_to_gcs.upload_files(upload_paths, GCS_BUCKET, user_id=user_id)
+        html_gcs_url = ""
+        text_gcs_url = ""
+        for u in uploads:
+            lp = u.get("local_path", "")
+            if lp.endswith(".html"):
+                html_gcs_url = u["gcs_url"]
+            elif lp.endswith(".txt"):
+                text_gcs_url = u["gcs_url"]
+        if html_gcs_url:
             print(f"  ✓ HTML uploaded: {html_gcs_url}", file=sys.stderr)
+        if defer_email and text_gcs_url:
+            print(f"  ✓ Plain text uploaded: {text_gcs_url}", file=sys.stderr)
+
+        subject = f"AI Newsletter — {content.get('headline', topic)} [{datetime.now().strftime('%b %d')}]"
+
+        if defer_email:
+            print("Step 6/6: Deferred — edition saved for scheduled send", file=sys.stderr)
+            edition_id = create_edition_pending(
+                subscription_id=subscription_id,
+                user_id=user_id,
+                subject=subject,
+                html_gcs_url=html_gcs_url,
+                text_gcs_url=text_gcs_url,
+                plain_text_preview=plain_text[:500],
+                research_query=research_query,
+                scheduled_send_utc=scheduled_send_utc,
+                tz_str=delivery_timezone,
+            )
+            print(f"\n✓ Prepare complete. Pending edition: {edition_id}", file=sys.stderr)
+            return edition_id
 
         # ── Step 6: Send email ────────────────────────────────────────
         print("Step 6/6: Sending email...", file=sys.stderr)
-        subject = f"AI Newsletter — {content.get('headline', topic)} [{datetime.now().strftime('%b %d')}]"
         message_id = send_email_gmail.send_email(
             html_path=html_output,
             text_path=text_output,
@@ -189,7 +242,6 @@ def run_pipeline(
         )
         print(f"  ✓ Email sent: {message_id}", file=sys.stderr)
 
-        # ── Save edition to Firestore ─────────────────────────────────
         edition_id = create_edition(
             subscription_id=subscription_id,
             user_id=user_id,
@@ -206,6 +258,49 @@ def run_pipeline(
         print(f"\nERROR in pipeline: {err_msg}", file=sys.stderr)
         if edition_id:
             mark_edition_failed(edition_id, err_msg)
+        raise
+
+
+def send_scheduled_edition(subscription_id: str) -> bool:
+    """If a pending edition is due this UTC minute, download assets from GCS, send email, finalize.
+
+    Returns:
+        True if an email was sent, False if nothing was pending for this minute.
+    """
+    now = datetime.now(timezone.utc)
+    pending = get_pending_edition_for_send(subscription_id, now)
+    if not pending:
+        return False
+
+    user = get_user(pending["user_id"])
+    if not user:
+        print(f"[send_scheduled] No user for edition {pending['id']}", file=sys.stderr)
+        return False
+
+    text_url = pending.get("text_gcs_url") or ""
+    if not pending.get("html_gcs_url") or not text_url:
+        print(f"[send_scheduled] Missing GCS URLs on edition {pending['id']}", file=sys.stderr)
+        mark_edition_failed(pending["id"], "Missing html_gcs_url or text_gcs_url")
+        return False
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"newsletter_send_{subscription_id[:8]}_"))
+    html_path = tmp_dir / "newsletter.html"
+    text_path = tmp_dir / "newsletter.txt"
+    try:
+        download_public_gcs_url(pending["html_gcs_url"], html_path)
+        download_public_gcs_url(text_url, text_path)
+        send_email_gmail.send_email(
+            html_path=html_path,
+            text_path=text_path,
+            recipients=[user["email"]],
+            subject=pending["subject"],
+        )
+        finalize_edition_sent(pending["id"])
+        print(f"[send_scheduled] Sent edition {pending['id']} to {user['email']}", file=sys.stderr)
+        return True
+    except Exception as e:
+        print(f"[send_scheduled] Failed edition {pending['id']}: {e}", file=sys.stderr)
+        mark_edition_failed(pending["id"], str(e))
         raise
 
 

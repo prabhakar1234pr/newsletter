@@ -20,6 +20,14 @@
       "collectionGroup": "editions",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "subscription_id", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "editions",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "date", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
       ]

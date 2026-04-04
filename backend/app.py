@@ -7,7 +7,7 @@ Endpoints:
     PATCH /subscriptions/{id}         — pause / resume / update
     DELETE /subscriptions/{id}        — delete subscription
     GET  /editions?subscription_id=   — archive for one subscription
-    POST /internal/run-due            — Cloud Scheduler trigger (hourly)
+    POST /internal/run-due            — Cloud Scheduler every minute: prepare at T−2m, send at T
 
 Auth:
     All /subscriptions and /editions routes require a valid Firebase ID token
@@ -26,15 +26,17 @@ import firebase_admin
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from firebase_admin import auth as firebase_auth, credentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # Add backend/ to path so tools/ imports work
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tools.firestore_client import (
+    PREPARE_LEAD_MINUTES,
     create_subscription,
     get_subscription,
-    get_subscriptions_due,
+    get_subscriptions_due_prepare,
+    get_subscriptions_due_send,
     update_subscription_status,
     get_user,
     upsert_user,
@@ -109,14 +111,16 @@ def verify_internal(x_internal_secret: str = Header(default=None)):
 class SubscriptionCreate(BaseModel):
     topic: str
     sub_genre: str | None = None
-    delivery_hour: int          # 0–23 UTC
+    delivery_hour: int = Field(ge=0, le=23)  # local hour in `timezone`
+    delivery_minute: int = Field(default=0, ge=0, le=59)
     timezone: str               # e.g. "Asia/Kolkata"
     frequency: str = "daily"
 
 
 class SubscriptionUpdate(BaseModel):
     is_active: bool | None = None
-    delivery_hour: int | None = None
+    delivery_hour: int | None = Field(default=None, ge=0, le=23)
+    delivery_minute: int | None = Field(default=None, ge=0, le=59)
     timezone: str | None = None
     sub_genre: str | None = None
 
@@ -172,6 +176,7 @@ def create_sub(body: SubscriptionCreate, user: dict = Depends(get_current_user))
         sub_genre=body.sub_genre,
         delivery_hour=body.delivery_hour,
         timezone_str=body.timezone,
+        delivery_minute=body.delivery_minute,
         frequency=body.frequency,
     )
     return {"id": sub_id, "message": "Subscription created"}
@@ -196,6 +201,8 @@ def update_sub(
         updates["is_active"] = body.is_active
     if body.delivery_hour is not None:
         updates["delivery_hour"] = body.delivery_hour
+    if body.delivery_minute is not None:
+        updates["delivery_minute"] = body.delivery_minute
     if body.timezone is not None:
         updates["timezone"] = body.timezone
     if body.sub_genre is not None:
@@ -253,47 +260,69 @@ def run_due(
     _: None = Depends(verify_internal),
     dry_run: bool = False,
 ):
-    """Find all subscriptions due at the current UTC hour and run their pipelines.
+    """Each minute: start prepare for subs due in PREPARE_LEAD_MINUTES, send for subs due now.
 
-    Called by Cloud Scheduler every hour.
-    Each pipeline runs in its own background thread so this endpoint returns
-    immediately without waiting for pipeline completion.
+    Cloud Scheduler must use cron `* * * * *` (UTC). Prepare runs first so HTML exists before send.
     """
-    current_hour = datetime.now(timezone.utc).hour
-    due = get_subscriptions_due(current_hour)
+    now = datetime.now(timezone.utc)
+    utc_label = f"{now.hour:02d}:{now.minute:02d}"
+    due_prepare = get_subscriptions_due_prepare(now.hour, now.minute)
+    due_send = get_subscriptions_due_send(now.hour, now.minute)
 
-    if not due:
-        return {"triggered": 0, "hour": current_hour, "message": "No subscriptions due"}
+    if not due_prepare and not due_send:
+        return {
+            "prepare_triggered": 0,
+            "send_triggered": 0,
+            "utc_time": utc_label,
+            "prepare_lead_minutes": PREPARE_LEAD_MINUTES,
+            "message": "No subscriptions due for prepare or send",
+        }
 
     if dry_run:
         return {
-            "triggered": 0,
+            "prepare_triggered": 0,
+            "send_triggered": 0,
             "dry_run": True,
-            "hour": current_hour,
-            "would_run": [s["id"] for s in due],
+            "utc_time": utc_label,
+            "prepare_lead_minutes": PREPARE_LEAD_MINUTES,
+            "would_prepare": [s["id"] for s in due_prepare],
+            "would_send": [s["id"] for s in due_send],
         }
 
-    triggered = []
-    for sub in due:
+    prepare_ids = []
+    for sub in due_prepare:
         sub_id = sub["id"]
-        t = threading.Thread(
-            target=_run_pipeline_safe,
+        threading.Thread(
+            target=_run_prepare_safe,
             args=(sub_id,),
             daemon=True,
-            name=f"pipeline-{sub_id[:8]}",
-        )
-        t.start()
-        triggered.append(sub_id)
+            name=f"prepare-{sub_id[:8]}",
+        ).start()
+        prepare_ids.append(sub_id)
+
+    send_ids = []
+    for sub in due_send:
+        sub_id = sub["id"]
+        threading.Thread(
+            target=_run_send_safe,
+            args=(sub_id,),
+            daemon=True,
+            name=f"send-{sub_id[:8]}",
+        ).start()
+        send_ids.append(sub_id)
 
     return {
-        "triggered": len(triggered),
-        "hour": current_hour,
-        "subscription_ids": triggered,
+        "prepare_triggered": len(prepare_ids),
+        "send_triggered": len(send_ids),
+        "utc_time": utc_label,
+        "prepare_lead_minutes": PREPARE_LEAD_MINUTES,
+        "prepare_subscription_ids": prepare_ids,
+        "send_subscription_ids": send_ids,
     }
 
 
-def _run_pipeline_safe(subscription_id: str):
-    """Run the pipeline for a subscription, catching all exceptions."""
+def _run_prepare_safe(subscription_id: str):
+    """Run steps 1–5 and create a pending edition (~PREPARE_LEAD_MINUTES before send)."""
     try:
         from main import run_pipeline
         from tools.firestore_client import get_subscription, get_user
@@ -313,9 +342,27 @@ def _run_pipeline_safe(subscription_id: str):
             recipient_email=user["email"],
             user_id=sub["user_id"],
             subscription_id=subscription_id,
+            defer_email=True,
+            delivery_timezone=sub.get("timezone") or "UTC",
+            delivery_hour=int(sub.get("delivery_hour", 0)),
+            delivery_minute=int(sub.get("delivery_minute", 0)),
         )
     except Exception as e:
-        print(f"[scheduler] Pipeline failed for {subscription_id}: {e}", flush=True)
+        print(f"[scheduler] Prepare failed for {subscription_id}: {e}", flush=True)
+
+
+def _run_send_safe(subscription_id: str):
+    """Send Gmail for a pending edition when the scheduled UTC minute arrives."""
+    try:
+        from main import send_scheduled_edition
+
+        sub = get_subscription(subscription_id)
+        if not sub or not sub.get("is_active"):
+            return
+
+        send_scheduled_edition(subscription_id)
+    except Exception as e:
+        print(f"[scheduler] Send failed for {subscription_id}: {e}", flush=True)
 
 
 # ---------------------------------------------------------------------------
