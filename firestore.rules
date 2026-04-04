@@ -1,0 +1,32 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Users: only the authenticated user can read/write their own doc
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Subscriptions: users can only access their own subscriptions
+    match /subscriptions/{subId} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid == resource.data.user_id;
+      allow create: if request.auth != null &&
+        request.auth.uid == request.resource.data.user_id;
+    }
+
+    // Editions: users can read their own editions (public archive via GCS URL)
+    match /editions/{editionId} {
+      allow read: if request.auth != null &&
+        request.auth.uid == resource.data.user_id;
+      // Writes only from backend (service account) — no client writes
+      allow write: if false;
+    }
+
+    // Prompt versions: read-only for all authenticated users, write from backend only
+    match /prompt_versions/{versionId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+  }
+}

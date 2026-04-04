@@ -1,0 +1,46 @@
+# Secrets — never commit
+.env
+.env.*
+credentials.json
+token.json
+service-account*.json
+gcp-key*.json
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.tmp/
+*.egg-info/
+dist/
+build/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+
+# uv
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Firebase
+firebase-debug.log
+.firebase/
+firestore-debug.log
+
+# Root-level legacy pipeline (superseded by backend/)
+tools/
+nul
