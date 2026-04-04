@@ -13,6 +13,7 @@ import argparse
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 from google.cloud import firestore
@@ -130,12 +131,29 @@ def seed_initial_prompt() -> str:
 # Subscriptions
 # ---------------------------------------------------------------------------
 
+def _local_hour_to_utc(local_hour: int, tz_str: str) -> int:
+    """Convert a subscription's local delivery hour to UTC hour.
+
+    Handles DST correctly by using today's actual date for the conversion.
+    Falls back to treating local_hour as UTC if the timezone string is invalid.
+    """
+    now_utc = datetime.now(timezone.utc)
+    try:
+        tz = ZoneInfo(tz_str)
+        local_dt = datetime(now_utc.year, now_utc.month, now_utc.day,
+                            local_hour, 0, 0, tzinfo=tz)
+        return local_dt.astimezone(timezone.utc).hour
+    except (ZoneInfoNotFoundError, Exception):
+        return local_hour  # fallback: treat as UTC
+
+
 def get_subscriptions_due(delivery_hour_utc: int) -> list[dict]:
-    """Return all active subscriptions due at the given UTC hour."""
+    """Return all active subscriptions whose local delivery hour maps to the
+    given UTC hour today (handles timezones + DST correctly).
+    """
     db = _get_db()
     docs = (
         db.collection("subscriptions")
-        .where(filter=FieldFilter("delivery_hour", "==", delivery_hour_utc))
         .where(filter=FieldFilter("is_active", "==", True))
         .stream()
     )
@@ -143,7 +161,12 @@ def get_subscriptions_due(delivery_hour_utc: int) -> list[dict]:
     for doc in docs:
         data = doc.to_dict()
         data["id"] = doc.id
-        results.append(data)
+        utc_hour = _local_hour_to_utc(
+            data.get("delivery_hour", 0),
+            data.get("timezone", "UTC"),
+        )
+        if utc_hour == delivery_hour_utc:
+            results.append(data)
     return results
 
 
