@@ -37,6 +37,7 @@ from tools import (
     synthesize_content,
     upload_to_gcs,
 )
+from tools.upload_to_gcs import download_public_gcs_url
 from tools.firestore_client import (
     create_edition,
     create_edition_pending,
