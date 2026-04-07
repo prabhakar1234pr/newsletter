@@ -27,7 +27,7 @@ DEFAULT_HTML_OUTPUT = PROJECT_ROOT / ".tmp" / "newsletter.html"
 DEFAULT_TEXT_OUTPUT = PROJECT_ROOT / ".tmp" / "newsletter.txt"
 
 
-def build_template_context(content: dict, images: dict) -> dict:
+def build_template_context(content: dict, images: dict, video_gcs_url: str = "") -> dict:
     """Build the Jinja2 template context from content and image URLs."""
     # Map image URLs by filename pattern
     image_map = {}
@@ -55,6 +55,7 @@ def build_template_context(content: dict, images: dict) -> dict:
         "sources": content.get("sources", []),
         "logo_url": logo_url,
         "date": datetime.now().strftime("%B %d, %Y"),
+        "video_url": video_gcs_url,
     }
 
 

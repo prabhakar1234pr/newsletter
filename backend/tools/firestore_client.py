@@ -310,7 +310,8 @@ def same_utc_minute(a, b) -> bool:
 
 def create_edition(subscription_id: str, user_id: str, subject: str,
                    html_gcs_url: str, plain_text_preview: str,
-                   research_query: str) -> str:
+                   research_query: str,
+                   video_gcs_url: str = "") -> str:
     """Record a sent newsletter edition (immediate send path). Returns the new doc ID."""
     db = _get_db()
     now = datetime.now(timezone.utc)
@@ -323,6 +324,7 @@ def create_edition(subscription_id: str, user_id: str, subject: str,
         "text_gcs_url": None,
         "plain_text_preview": plain_text_preview[:500],
         "research_query": research_query,
+        "video_gcs_url": video_gcs_url or None,
         "sent_at": now,
         "quality_score": None,
         "agent_notes": None,
@@ -342,6 +344,7 @@ def create_edition_pending(
     research_query: str,
     scheduled_send_utc: datetime,
     tz_str: str,
+    video_gcs_url: str = "",
 ) -> str:
     """Edition ready for email at scheduled_send_utc (status pending_email)."""
     db = _get_db()
@@ -355,6 +358,7 @@ def create_edition_pending(
         "text_gcs_url": text_gcs_url,
         "plain_text_preview": plain_text_preview[:500],
         "research_query": research_query,
+        "video_gcs_url": video_gcs_url or None,
         "prepared_at": prepared_at,
         "scheduled_send_at": scheduled_send_utc,
         "sent_at": None,

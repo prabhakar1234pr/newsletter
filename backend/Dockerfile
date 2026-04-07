@@ -4,6 +4,7 @@ FROM python:3.13-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libxml2-dev libxslt-dev \
     libjpeg-dev zlib1g-dev fonts-liberation \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv

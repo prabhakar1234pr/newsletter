@@ -31,6 +31,7 @@ load_dotenv()
 from tools import (
     generate_chart,
     generate_infographic,
+    generate_video,
     render_html,
     research_topic,
     send_email_gmail,
@@ -103,11 +104,13 @@ def run_pipeline(
     content_output = tmp_dir / "newsletter_content.json"
     infographic_output = tmp_dir / "infographic_001.png"
     chart_output = tmp_dir / "chart_001.png"
+    video_output = tmp_dir / "newsletter_video.mp4"
     image_urls_output = tmp_dir / "image_urls.json"
     html_output = tmp_dir / "newsletter.html"
     text_output = tmp_dir / "newsletter.txt"
 
     edition_id = None
+    video_gcs_url = ""
 
     if defer_email:
         if not delivery_timezone or delivery_hour is None or delivery_minute is None:
@@ -167,20 +170,37 @@ def run_pipeline(
         else:
             print("  SKIP: No chart data in content", file=sys.stderr)
 
-        # ── Step 4: Upload images ─────────────────────────────────────
-        print("Step 4/6: Uploading images to GCS...", file=sys.stderr)
-        image_files = [
-            str(p) for p in [infographic_output, chart_output] if p.exists()
+        # ── Step 3c: Generate video ───────────────────────────────────
+        print("Step 3c/6: Generating video...", file=sys.stderr)
+        try:
+            generate_video.generate_video(
+                content=content,
+                topic=topic,
+                output_path=video_output,
+            )
+            print("  ✓ Video generated", file=sys.stderr)
+        except Exception as video_err:
+            print(f"  WARNING: Video generation failed (non-fatal): {video_err}", file=sys.stderr)
+            video_output = None  # sentinel: skip upload + template binding
+
+        # ── Step 4: Upload images + video ─────────────────────────────
+        print("Step 4/6: Uploading media to GCS...", file=sys.stderr)
+        media_files = [
+            str(p) for p in [infographic_output, chart_output, video_output]
+            if p is not None and Path(p).exists()
         ]
-        if image_files:
-            uploads = upload_to_gcs.upload_files(image_files, GCS_BUCKET, user_id=user_id)
+        if media_files:
+            uploads = upload_to_gcs.upload_files(media_files, GCS_BUCKET, user_id=user_id)
             image_urls_output.write_text(
                 json.dumps({"uploads": uploads}, indent=2), encoding="utf-8"
             )
-            print(f"  ✓ {len(uploads)} images uploaded", file=sys.stderr)
+            print(f"  ✓ {len(uploads)} files uploaded", file=sys.stderr)
+            for u in uploads:
+                if u.get("local_path", "").endswith(".mp4"):
+                    video_gcs_url = u["gcs_url"]
         else:
             image_urls_output.write_text(json.dumps({"uploads": []}), encoding="utf-8")
-            print("  SKIP: No images to upload", file=sys.stderr)
+            print("  SKIP: No media files to upload", file=sys.stderr)
 
         image_urls_data = json.loads(image_urls_output.read_text(encoding="utf-8"))
         html_gcs_url = ""  # filled after HTML render + upload below
@@ -188,7 +208,7 @@ def run_pipeline(
         # ── Step 5: Render HTML ───────────────────────────────────────
         print("Step 5/6: Rendering HTML...", file=sys.stderr)
         images_data = json.loads(image_urls_output.read_text(encoding="utf-8"))
-        context = render_html.build_template_context(content, images_data)
+        context = render_html.build_template_context(content, images_data, video_gcs_url=video_gcs_url)
         from jinja2 import Environment, FileSystemLoader
         templates_dir = Path(__file__).resolve().parent / "tools" / "templates"
         env = Environment(loader=FileSystemLoader(str(templates_dir)), autoescape=True)
@@ -229,6 +249,7 @@ def run_pipeline(
                 research_query=research_query,
                 scheduled_send_utc=scheduled_send_utc,
                 tz_str=delivery_timezone,
+                video_gcs_url=video_gcs_url,
             )
             print(f"\n✓ Prepare complete. Pending edition: {edition_id}", file=sys.stderr)
             return edition_id
@@ -250,6 +271,7 @@ def run_pipeline(
             html_gcs_url=html_gcs_url,
             plain_text_preview=plain_text[:500],
             research_query=research_query,
+            video_gcs_url=video_gcs_url,
         )
         print(f"\n✓ Pipeline complete. Edition: {edition_id}", file=sys.stderr)
         return edition_id

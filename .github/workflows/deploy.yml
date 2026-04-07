@@ -61,6 +61,7 @@ jobs:
           ALLOWED_ORIGINS: "${{ secrets.ALLOWED_ORIGINS }}"
           GMAIL_USER: "${{ secrets.GMAIL_USER }}"
           GMAIL_APP_PASSWORD: "${{ secrets.GMAIL_APP_PASSWORD }}"
+          PEXELS_API_KEY: "${{ secrets.PEXELS_API_KEY }}"
           ENVEOF
 
       - name: Deploy to Cloud Run
@@ -70,9 +71,9 @@ jobs:
             --region ${{ env.REGION }} \
             --platform managed \
             --allow-unauthenticated \
-            --memory 1Gi \
+            --memory 2Gi \
             --cpu 1 \
-            --timeout 300 \
+            --timeout 600 \
             --concurrency 10 \
             --no-cpu-throttling \
             --min-instances 0 \

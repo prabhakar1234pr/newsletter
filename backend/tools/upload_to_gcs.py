@@ -51,6 +51,7 @@ def upload_files(file_paths: list[str], bucket_name: str,
 
         content_type = (
             "image/png" if path.suffix == ".png"
+            else "video/mp4" if path.suffix == ".mp4"
             else "text/html; charset=utf-8" if path.suffix == ".html"
             else "text/plain; charset=utf-8" if path.suffix == ".txt"
             else "application/octet-stream"

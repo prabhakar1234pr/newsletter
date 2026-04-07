@@ -109,6 +109,27 @@
         </tr>
         {% endif %}
 
+        <!-- ============ VIDEO BRIEFING ============ -->
+        {% if video_url %}
+        <tr>
+          <td style="padding:24px 32px 8px 32px;">
+            <h3 style="margin:0 0 12px 0; color:#8331A6; font-family:'Poppins',Arial,Helvetica,sans-serif; font-size:16px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">Video Briefing</h3>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 32px 24px 32px;" align="center">
+            <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;">
+              <tr>
+                <td bgcolor="#1A2236" style="background-color:#1A2236; border-radius:8px; padding:20px 24px;" align="center">
+                  <p style="margin:0 0 14px 0; color:#FFFFFF; font-family:'Poppins',Arial,Helvetica,sans-serif; font-size:15px; font-weight:600; line-height:1.5;">Watch the full video briefing</p>
+                  <a href="{{ video_url }}" target="_blank" style="display:inline-block; padding:12px 28px; background-color:#2F94FB; color:#FFFFFF; font-family:'Poppins',Arial,Helvetica,sans-serif; font-size:14px; font-weight:700; text-decoration:none; border-radius:6px;">&#9654; Watch Now (~2 min)</a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        {% endif %}
+
         <!-- ============ CTA ============ -->
         {% if cta %}
         <tr>
