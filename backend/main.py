@@ -149,11 +149,14 @@ def run_pipeline(
         print("Step 3a/6: Generating infographic...", file=sys.stderr)
         infographic_prompt = content.get("infographic_prompt")
         if infographic_prompt:
-            generate_infographic.generate_infographic(
-                prompt=infographic_prompt,
-                output_path=infographic_output,
-            )
-            print("  ✓ Infographic generated", file=sys.stderr)
+            try:
+                generate_infographic.generate_infographic(
+                    prompt=infographic_prompt,
+                    output_path=infographic_output,
+                )
+                print("  ✓ Infographic generated", file=sys.stderr)
+            except Exception as infographic_err:
+                print(f"  WARNING: Infographic generation failed (non-fatal): {infographic_err}", file=sys.stderr)
         else:
             print("  SKIP: No infographic prompt in content", file=sys.stderr)
 

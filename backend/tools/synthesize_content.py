@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -95,10 +96,18 @@ Research sources:
 
 Produce the newsletter JSON now."""
 
-    print(f"Sending to Gemini 2.5 Pro (topic: {research['topic']})...", file=sys.stderr)
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
 
+    def _strip_fences(t: str) -> str:
+        if t.startswith("```"):
+            t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+            if t.endswith("```"):
+                t = t[:-3]
+        return t.strip()
+
+    print(f"Sending to {gemini_model} (topic: {research['topic']})...", file=sys.stderr)
     response = client.models.generate_content(
-        model="gemini-2.5-pro",
+        model=gemini_model,
         contents=user_prompt,
         config=types.GenerateContentConfig(
             system_instruction=active_prompt,
@@ -106,21 +115,14 @@ Produce the newsletter JSON now."""
             temperature=0.7,
         ),
     )
-
-    text = response.text.strip()
-    # Strip markdown fences if Gemini wraps the JSON
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
+    text = _strip_fences(response.text.strip())
 
     try:
         content = json.loads(text)
     except json.JSONDecodeError:
         print("WARNING: First attempt returned invalid JSON, retrying...", file=sys.stderr)
         retry_response = client.models.generate_content(
-            model="gemini-2.5-pro",
+            model=gemini_model,
             contents=f"Your previous response was not valid JSON. Please output ONLY the JSON object, no markdown fences:\n\n{user_prompt}",
             config=types.GenerateContentConfig(
                 system_instruction=active_prompt,
@@ -128,19 +130,7 @@ Produce the newsletter JSON now."""
                 temperature=0.3,
             ),
         )
-        retry_text = retry_response.text.strip()
-        if retry_text.startswith("```"):
-            retry_text = retry_text.split("\n", 1)[1] if "\n" in retry_text else retry_text[3:]
-            if retry_text.endswith("```"):
-                retry_text = retry_text[:-3]
-            retry_text = retry_text.strip()
-        content = json.loads(retry_text)
-
-    # Log token usage
-    if hasattr(response, "usage_metadata"):
-        usage = response.usage_metadata
-        print(f"Tokens — input: {getattr(usage, 'prompt_token_count', '?')}, "
-              f"output: {getattr(usage, 'candidates_token_count', '?')}", file=sys.stderr)
+        content = json.loads(_strip_fences(retry_response.text.strip()))
 
     return content
 
